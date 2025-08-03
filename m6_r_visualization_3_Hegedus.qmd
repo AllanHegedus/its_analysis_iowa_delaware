@@ -1,0 +1,233 @@
+---
+title: "An Interrupted Time Series Analysis of Voter Turnout in Iowa and Delaware, 1980-2010"
+author: "Allan Hegedus, Johns Hopkins University"
+format:
+  html:
+    self-contained: true
+    code-fold: false
+    code-tools: false
+    echo: false
+editor: visual
+bibliography: references.bib
+csl: apa.csl.txt
+---
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# new libraries this week!
+suppressWarnings({library(tidyverse)
+library(openxlsx)
+library(ggplot2)
+library(patchwork)
+library(broom)
+library(modelsummary)})
+
+# setwd and data
+setwd("~/Desktop/Johns Hopkins DAP/AS 470.673 Data Visualization/Final Project/Proposal")
+corr_policy_data <- read.csv("correlates2-6.csv")
+
+corr_policy_subset <- corr_policy_data %>%
+  # getting variables (less than usual needed for this one)
+  dplyr::select(state, year, prez_election_year, anyid2, absvot,
+         earlvot, motorvoter, noofvotes, vep 
+         ) %>%
+  # filter for years and our two states
+  filter(year >= 1980 & year < 2011 & year %% 2 == 0 & state %in% c("Delaware", "Iowa")) %>%
+  # creating the vep voting rate
+  mutate(
+    vep_voting_rate = (noofvotes / vep) * 100,
+  ) 
+
+# Time to create the data subsets
+iowa_subset <- corr_policy_subset %>%
+  # Get Iowa
+  filter(state == "Iowa") %>%
+  # Define treatment period
+  mutate(treatment = ifelse(year > 1991, 1, 0)) %>%
+  # Just to put data in proper order (probably not necessary)
+  arrange(year) %>%
+  # Creating the time and time_post variables (time and time treatment interaction effect)
+  mutate(
+    time = year - min(year) + 1,
+    time_post = time * treatment
+  ) %>%
+  # For labels
+  mutate(election_type = ifelse(prez_election_year == 1, "Presidential", "Midterm"))
+
+# Same thing, but for Delaware
+delaware_subset <- corr_policy_subset %>%
+  # Get Delaware
+  filter(state == "Delaware") %>%
+  # Define treatment period
+  mutate(treatment = ifelse(year > 1995, 1, 0)) %>%
+  # Again, arrange by year
+  arrange(year) %>%
+  # Creating the time and time_post variables (time and time treatment interaction effect)
+  mutate(
+    time = year - min(year) + 1,
+    time_post = time * treatment
+  ) %>%
+  # Election type for labels
+  mutate(election_type = ifelse(prez_election_year == 1, "Presidential", "Midterm"))
+
+# ITS models
+model_iowa <- lm(vep_voting_rate ~ time + treatment + time_post + prez_election_year, data = iowa_subset)
+model_delaware <- lm(vep_voting_rate ~ time + treatment + time_post + prez_election_year, data = delaware_subset)
+
+# Add fitted values to each dataset
+aug_iowa <- augment(model_iowa, data = iowa_subset)
+aug_delaware  <- augment(model_delaware, data = delaware_subset)
+
+# I'm keeping this in here - did not use
+plot_iowa_combined <- ggplot(iowa_subset, aes(x = year, y = vep_voting_rate, color = election_type)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 1992, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("Presidential" = "blue", "Midterm" = "orange")) +
+  labs(
+    title = "Iowa - VEP Voting Rate (1980–2010)",
+    subtitle = "Red dashed line = Policy change in 1992",
+    x = "Year", y = "VEP Voting Rate (%)",
+    color = "Election Type"
+  ) +
+  theme_minimal(base_size = 12)
+
+# Creating the counterfactual lines for easy comparison
+# Iowa
+aug_iowa <- aug_iowa %>%
+  mutate(counterfactual = predict(model_iowa, newdata = iowa_subset %>% mutate(treatment = 0, time_post = 0)))
+
+# Delaware
+aug_delaware <- aug_delaware %>%
+  mutate(counterfactual = predict(model_delaware,
+                                  newdata = delaware_subset %>% mutate(treatment = 0, time_post = 0)))
+
+# getting new data
+#write.xlsx(corr_policy_subset, "m6_r_viz_3_data_subset_Hegedus.xlsx")
+```
+
+## Introduction
+
+In this project, using the *Correlates of State Policy* dataset from Michigan State University,[^1] I conduct an interrupted time series (ITS) analysis on two states to evaluate the impacts of their policy changes in 1991-1992 (Iowa) and 1995-1996 (Delaware) on voter turnout.[^2] These states serve as ideal candidates for ITS, as they only had one period of policy change from 1980-2010. The policy changes are detailed in the table below. Generally, both of Iowa's policies would be expected to lead to increased turnout, while one of Delaware's two policies would be expected to depress turnout instead.
+
+[^1]: See @ippsr_correlates_state_policy.
+
+[^2]: Thank you to Dr. David Warren for his willingness to help me brainstorm and process this idea early on, and Dr. Holly Brasher for her support to pursue this and her feedback. This would not be as good of a project without your input. All errors are my own.
+
+### Table 1: Policy Changes in Iowa and Delaware
+
+| State | Year | Change | Expected Effect |
+|----|----|----|----|
+| Iowa | 1991 | Added absentee and early voting | Increased turnout |
+| Iowa | 1992 | Added registration while applying for or renewing driver's license | Increased turnout |
+| Delaware | 1995 | Added registration while applying for or renewing driver's license | Increased turnout |
+| Delaware | 1996 | Requires some kind of ID for voting | Decreased turnout |
+
+I use a basic interrupted time series (ITS) model to estimate the effects of these policy changes on each state separately. For both Iowa and Delaware, the model takes the form:
+
+$$
+Y_t = \beta_0 + \beta_1 \cdot \text{time}_t + \beta_2 \cdot \text{treatment}_t + \beta_3 \cdot \text{time\_post}_t + \beta_4 \cdot \text{prez\_election\_year}_t + \varepsilon_t
+$$
+
+where:
+
+-   $Y_t$ is the voting-eligible population (VEP) voting rate,
+-   $\beta_0$ is the baseline VEP voting rate,
+-   $\text{time}_t$ captures the linear time trend,
+-   $\text{treatment}_t$ is a binary indicator equal to 1 if $t \geq$ policy year, and 0 otherwise,
+-   $\text{time\_post}_t$ represents the number of years since the policy was implemented and serves as an interaction between treatment and time (0 before treatment),
+-   $\text{prez\_election\_year}_t$ is a control for presidential election years (1 for presidential years, 0 otherwise),
+-   and $\varepsilon_t$ is the error term.
+
+In each case, treatments show an initial negative effect, though Delaware's is likely more substantial due to their implementation of a voter ID law in 1996. After the initial decline, both state experience an upward trend in voter rate, though Delaware's is larger than Iowa's. In addition, only Delaware's treatment and time trends are statistically significant. This could be partially explained by residents of Delaware adjusting to the new ID laws and being able to register at higher rates over time, in addition to the secondary positive effect of the motor license registration law, though more exploration would be needed to determine an exact cause.
+
+### Table 2: Interrupted Time Series Regression Results for Iowa and Delaware
+
+```{r, warning=FALSE, message=FALSE}
+# ChatGPT was a huge help in making this table 
+# Models in list 
+models <- list("Iowa" = model_iowa, "Delaware" = model_delaware)
+modelsummary(models, 
+             stars = TRUE, 
+             statistic = "({std.error})", 
+             gof_omit = "IC|LogLik", 
+             output = "html")
+```
+
+## Visual Description and Trend
+
+As only Delaware had statistically significant results, I proceed with highlighting Delaware's policy changes via visualization, using three charts. The top chart shows a time-series of Delaware's midterm and presidential election voter turnout over time, with purple highlighting indicating the period of policy changes. In both election types, there is a general increase in voter turnout after an initial decline in the years following the policy changes.
+
+Below that, I plotted the results of the ITS for both election types, while including a dashed counterfactual line to estimate the voter turnout without a policy change. The distance of the fitted ITS model from the counterfactual line generally indicates a higher effect of whatever treatment has been applied.[^3] In this case, the ITS model again indicates that there is an initial voting rate decline in the 1996/1998 elections, before seeing voter turnout increases in each subsequent election.
+
+[^3]: The causal effect from the treatment can be assumed if there are not other confounders to control for. In this instance, other policy changes do not take effect. Given we also see a similar trend in Iowa (though not a statistically significant one), it reasonable to assume some causal effect from this policy.
+
+```{r, warning=FALSE, message=FALSE, fig.width=16, fig.height=12}
+# Time series plot (to show raw data)
+plot_delaware_combined <- ggplot(delaware_subset, aes(x = year, y = vep_voting_rate, color = election_type)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Presidential" = "red", "Midterm" = "black")) +
+  labs(
+    title = "Voting Eligibile Population Voting Rate in Delaware (1980–2010)",
+    subtitle = "Purple shading represents policy changes in 1995/1996\nSource: Correlates of State Policy Dataset",
+    x = "Year", y = "VEP Voting Rate (%)",
+    color = "Election Type"
+  ) +
+  theme_minimal(base_size = 12) + 
+  annotate("rect", xmin = 1995, xmax = 1996, ymin = -Inf, ymax = Inf,
+           alpha = 0.2, fill = "purple")
+
+# Filter data to get separate plots for diff election types
+del_pres <- aug_delaware %>% filter(election_type == "Presidential")
+del_mid  <- aug_delaware %>% filter(election_type == "Midterm")
+
+# Presidential election plot
+plot_del_pres <- ggplot(del_pres, aes(x = year)) +
+  geom_point(aes(y = vep_voting_rate), color = "black", size = 2, alpha = 0.8) +
+  geom_line(aes(y = .fitted, color = "Fitted"), size = 0.8) +
+  geom_line(aes(y = counterfactual, color = "Counterfactual"), linetype = "dashed", size = 0.8) +
+  scale_x_continuous(breaks = del_pres$year) +
+  scale_y_continuous(limits = c(30, 70)) +
+  scale_color_manual(
+    name = "Line Type",
+    values = c("Fitted" = "blue", "Counterfactual" = "gray50")
+  ) +
+  labs(
+    title = "Interrupted Time Series Results and Counterfactual Scenario",
+    subtitle = "Presidential ITS Points (prez_election_year = 1)",
+    x = "Year", y = "VEP Voting Rate (%)"
+  ) +
+  theme_minimal(base_size = 12) + 
+  annotate("rect", xmin = 1995, xmax = 1996, ymin = -Inf, ymax = Inf,
+           alpha = 0.2, fill = "purple")
+
+# Midterm election plot
+plot_del_mid <- ggplot(del_mid, aes(x = year)) +
+  geom_point(aes(y = vep_voting_rate), color = "black", size = 2, alpha = 0.8) +
+  geom_line(aes(y = .fitted, color = "Fitted"), size = 0.8) +
+  geom_line(aes(y = counterfactual, color = "Counterfactual"), linetype = "dashed", size = 0.8) +
+  scale_x_continuous(breaks = del_mid$year) +
+  scale_y_continuous(limits = c(30, 70)) +
+  scale_color_manual(
+    name = "Line Type",
+    values = c("Fitted" = "blue", "Counterfactual" = "gray50")
+  ) +
+  labs(
+    subtitle  = "Midterm ITS Points (prez_election_year = 0)",
+    x = "Year", y = "VEP Voting Rate (%)"
+  ) +
+  theme_minimal(base_size = 12) + 
+  annotate("rect", xmin = 1995, xmax = 1996, ymin = -Inf, ymax = Inf,
+           alpha = 0.2, fill = "purple")
+
+
+# Putting them all together via Patchwork
+final_plot <- (plot_delaware_combined) / (plot_del_pres | plot_del_mid) + plot_layout(guides = "collect")
+
+# Call plot!
+final_plot
+```
+
+## Conclusion
+
+For this project, I utilized an interrupted time series approach to study the effects of voting law changes in Iowa and Delaware, selected since they only change their policies one time in the 1980-2010 period. While both states exhibited similar trends, Delaware's effects were more pronounced and was the only state whose policy changes could be considered statistically significant. Delaware saw an immediate drop-off in voter turnout, likely from their new voter ID law from 1996, before seeing increasing turnout through 2010. Future research should aim to control for other voting policy schemes to study other voting policy types and impacts, and could also consider the political makeup of the states to explain and clarify potential effects on voter turnout.
